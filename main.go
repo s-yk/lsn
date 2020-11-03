@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	version = "v0.0.1"
+	version = "v0.0.2"
 	name    = "lsn"
 )
 
@@ -59,7 +59,7 @@ func run(cli *cli) int {
 	flg.BoolVar(&cxt.onlyDir, "od", false, "only directory")
 	flg.StringVar(&cxt.filter, "fi", "", "filter.")
 	flg.StringVar(&cxt.exclusion, "ex", "", "exclusion.")
-	flg.BoolVar(&cxt.all, "a", false, "exclusion.")
+	flg.BoolVar(&cxt.all, "a", false, "include hidden file, directory.")
 	var v bool
 	flg.BoolVar(&v, "v", false, "print version.")
 	flg.Usage = func() {
