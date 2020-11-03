@@ -1,61 +1,208 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/saracen/walker"
 )
+
+var (
+	version = "v0.0.1"
+	name    = "lsn"
+)
+
+type cli struct {
+	in   *os.File
+	out  *os.File
+	err  *os.File
+	args []string
+}
+type context struct {
+	depth     int
+	fullPath  bool
+	onlyFile  bool
+	onlyDir   bool
+	filter    string
+	exclusion string
+	all       bool
+	version   bool
+}
+type filter func(pathname string, fi os.FileInfo) (filterStatus, error)
+type filterStatus int
 
 const (
-	version = "v0.0.1"
+	filterIncluded filterStatus = iota
+	filterExluded
+	filterError
 )
 
-func main() {
+var errLimitDepth = errors.New("limit of depth")
 
-	var r bool
-	flag.BoolVar(&r, "r", false, "recursive.")
-	var d int
-	flag.IntVar(&d, "d", 0, "recurse depth.")
-	var tf bool
-	flag.BoolVar(&tf, "tf", false, "only file.")
-	var td bool
-	flag.BoolVar(&td, "td", false, "only directory")
-	var fi string
-	flag.StringVar(&fi, "f", "", "filter.")
-	var ex string
-	flag.StringVar(&ex, "e", "", "exclusion.")
+func main() {
+	os.Exit(run(&cli{in: os.Stdout, out: os.Stdin, err: os.Stderr, args: os.Args}))
+}
+
+func run(cli *cli) int {
+	flg := flag.NewFlagSet(name, flag.ExitOnError)
+	flg.SetOutput(cli.err)
+
+	cxt := &context{}
+	flg.IntVar(&cxt.depth, "d", 0, "recurse depth.")
+	flg.BoolVar(&cxt.fullPath, "f", false, "print full path.")
+	flg.BoolVar(&cxt.onlyFile, "of", false, "only file.")
+	flg.BoolVar(&cxt.onlyDir, "od", false, "only directory")
+	flg.StringVar(&cxt.filter, "fi", "", "filter.")
+	flg.StringVar(&cxt.exclusion, "ex", "", "exclusion.")
+	flg.BoolVar(&cxt.all, "a", false, "exclusion.")
 	var v bool
-	flag.BoolVar(&v, "v", false, "print version.")
-	flag.Usage = func() {
-		printVersion()
-		fmt.Println("Print files, directories.")
-		flag.PrintDefaults()
+	flg.BoolVar(&v, "v", false, "print version.")
+	flg.Usage = func() {
+		printVersion(flg.Output())
+		fmt.Fprintln(flg.Output(), "Print files, directories.")
+		flg.PrintDefaults()
 	}
-	flag.Parse()
+	flg.Parse(cli.args[1:])
 
 	if v {
-		printVersion()
-		os.Exit(0)
+		printVersion(cli.out)
+		return 0
 	}
 
-	root := flag.Arg(0)
+	root := flg.Arg(0)
 	if root == "" {
 		root = "."
 	}
 
-	if err := run(root); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(2)
+	if err := proc(root, cxt, cli); err != nil {
+		fmt.Fprintln(cli.err, err)
+		return 1
 	}
 
-	os.Exit(0)
+	return 0
 }
 
-func printVersion() {
-	fmt.Printf("lsn %s\n", version)
+func printVersion(writer io.Writer) {
+	fmt.Fprintf(writer, "%s %s\n", name, version)
 }
 
-func run(root string) error {
-	fmt.Println(root)
-	return nil
+func proc(root string, ctx *context, cli *cli) error {
+	fs := filters(ctx)
+	err := walker.Walk(root, func(pathname string, fi os.FileInfo) error {
+		s, err := doFilter(pathname, fi, fs)
+		if err != nil {
+			return err
+		}
+		if s == filterIncluded {
+			var op string
+			if ctx.fullPath && !filepath.IsAbs(pathname) {
+				op, err = filepath.Abs(pathname)
+				if err != nil {
+					return err
+				}
+			} else {
+				op = filepath.Clean(pathname)
+			}
+			fmt.Fprintf(cli.out, "%s\n", op)
+		}
+		return nil
+	}, walker.WithErrorCallback(func(pathname string, err error) error {
+		if os.IsPermission(err) {
+			return nil
+		}
+		return err
+	}))
+
+	if err == errLimitDepth {
+		return nil
+	}
+
+	return err
+}
+
+func filters(ctx *context) []filter {
+	var fs []filter
+
+	if !ctx.all {
+		fs = append(fs, func(pathname string, fi os.FileInfo) (filterStatus, error) {
+			if "." != fi.Name() && strings.HasPrefix(fi.Name(), ".") {
+				if fi.IsDir() {
+					return filterExluded, filepath.SkipDir
+				}
+				return filterExluded, nil
+			}
+			return filterIncluded, nil
+		})
+	}
+
+	if ctx.depth > 0 {
+		fs = append(fs, func(pathname string, fi os.FileInfo) (filterStatus, error) {
+			if len(strings.Split(filepath.Clean(pathname), string(filepath.Separator))) > ctx.depth {
+				return filterExluded, errLimitDepth
+			}
+			return filterIncluded, nil
+		})
+	}
+
+	if !(ctx.onlyDir && ctx.onlyFile) {
+		if ctx.onlyDir {
+			fs = append(fs, func(pathname string, fi os.FileInfo) (filterStatus, error) {
+				if fi.IsDir() {
+					return filterIncluded, nil
+				}
+				return filterExluded, nil
+			})
+		}
+		if ctx.onlyFile {
+			fs = append(fs, func(pathname string, fi os.FileInfo) (filterStatus, error) {
+				if fi.IsDir() {
+					return filterExluded, nil
+				}
+				return filterIncluded, nil
+			})
+		}
+	}
+
+	if ctx.filter != "" {
+		fs = append(fs, func(pathname string, fi os.FileInfo) (filterStatus, error) {
+			m := strings.Contains(pathname, ctx.filter)
+			if m {
+				return filterIncluded, nil
+			}
+			return filterExluded, nil
+		})
+	}
+
+	if ctx.exclusion != "" {
+		fs = append(fs, func(pathname string, fi os.FileInfo) (filterStatus, error) {
+			m := strings.Contains(pathname, ctx.exclusion)
+			if !m {
+				return filterIncluded, nil
+			}
+			return filterExluded, nil
+		})
+	}
+
+	return fs
+}
+
+func doFilter(pathname string, fi os.FileInfo, filters []filter) (filterStatus, error) {
+	for _, f := range filters {
+		s, err := f(pathname, fi)
+
+		if err != nil {
+			return s, err
+		}
+
+		if s == filterExluded {
+			return s, nil
+		}
+	}
+
+	return filterIncluded, nil
 }
