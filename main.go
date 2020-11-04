@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	version = "v0.0.2"
+	version = "0.0.2"
 	name    = "lsn"
 )
 
@@ -45,7 +45,7 @@ const (
 var errLimitDepth = errors.New("limit of depth")
 
 func main() {
-	os.Exit(run(&cli{in: os.Stdout, out: os.Stdin, err: os.Stderr, args: os.Args}))
+	os.Exit(run(&cli{in: os.Stdin, out: os.Stdout, err: os.Stderr, args: os.Args}))
 }
 
 func run(cli *cli) int {
@@ -88,7 +88,7 @@ func run(cli *cli) int {
 }
 
 func printVersion(writer io.Writer) {
-	fmt.Fprintf(writer, "%s %s\n", name, version)
+	fmt.Fprintf(writer, "%s v%s\n", name, version)
 }
 
 func proc(root string, ctx *context, cli *cli) error {
