@@ -12,7 +12,7 @@ import (
 	"github.com/saracen/walker"
 )
 
-var (
+const (
 	version = "0.0.3"
 	name    = "lsn"
 )
@@ -169,13 +169,28 @@ func filters(ctx *context) []filter {
 	}
 
 	if ctx.filter != "" {
-		fs = append(fs, func(pathname string, fi os.FileInfo) (filterStatus, error) {
-			m := strings.Contains(pathname, ctx.filter)
-			if m {
-				return filterIncluded, nil
+		// case insensitive
+		cis := ctx.filter == strings.ToLower(ctx.filter) || ctx.filter == strings.ToUpper(ctx.filter)
+		for _, cfl := range strings.Split(ctx.filter, " ") {
+			fl := cfl
+			if cis {
+				fl = strings.ToLower(fl)
 			}
-			return filterExluded, nil
-		})
+
+			fs = append(fs, func(pathname string, fi os.FileInfo) (filterStatus, error) {
+				var m bool
+				if cis {
+					m = strings.Contains(strings.ToLower(pathname), fl)
+				} else {
+					m = strings.Contains(pathname, fl)
+				}
+
+				if m {
+					return filterIncluded, nil
+				}
+				return filterExluded, nil
+			})
+		}
 	}
 
 	if ctx.exclusion != "" {
